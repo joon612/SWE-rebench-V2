@@ -32,3 +32,5 @@ eval_report.json
 # OS/editor junk
 .DS_Store
 Thumbs.db
+
+.vscode
