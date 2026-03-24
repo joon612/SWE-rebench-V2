@@ -34,3 +34,4 @@ eval_report.json
 Thumbs.db
 
 .vscode
+generate_dockerfile.yaml
