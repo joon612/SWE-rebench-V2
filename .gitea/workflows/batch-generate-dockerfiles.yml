@@ -1,0 +1,216 @@
+name: Batch Generate Dockerfiles
+
+on:
+  workflow_dispatch:
+    inputs:
+      jsonl:
+        description: Path to the input JSONL file on the runner
+        required: true
+        default: ""
+      output_dir:
+        description: Directory where rendered Dockerfiles will be written
+        required: true
+        default: dockerfiles
+      template:
+        description: Jinja2 template path
+        required: true
+        default: combine.Dockerfile.j2
+      workers:
+        description: Number of parallel workers
+        required: false
+        default: "4"
+      base_image_registry:
+        description: Optional registry prefix for base images
+        required: false
+        default: ""
+      base_image_tag_suffix:
+        description: Suffix appended to base image names
+        required: true
+        default: _base
+      image_registry:
+        description: Optional registry prefix for built instance images
+        required: false
+        default: ""
+      tag_prefix:
+        description: Optional prefix for built image tags
+        required: false
+        default: ""
+      summary:
+        description: Optional path to write JSON summary
+        required: false
+        default: batch-generate-summary.json
+      local_artifact_dir:
+        description: Optional directory on the runner to persist outputs locally
+        required: false
+        default: ""
+      build:
+        description: Also run docker build for each rendered Dockerfile
+        required: true
+        type: boolean
+        default: false
+      dry_run:
+        description: Validate records without writing files
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  batch-generate:
+    runs-on: ubuntu-latest
+    env:
+      JSONL: ${{ github.event.inputs.jsonl }}
+      OUTPUT_DIR: ${{ github.event.inputs.output_dir }}
+      TEMPLATE: ${{ github.event.inputs.template }}
+      WORKERS: ${{ github.event.inputs.workers }}
+      BASE_IMAGE_REGISTRY: ${{ github.event.inputs.base_image_registry }}
+      BASE_IMAGE_TAG_SUFFIX: ${{ github.event.inputs.base_image_tag_suffix }}
+      IMAGE_REGISTRY: ${{ github.event.inputs.image_registry }}
+      TAG_PREFIX: ${{ github.event.inputs.tag_prefix }}
+      SUMMARY: ${{ github.event.inputs.summary }}
+      LOCAL_ARTIFACT_DIR: ${{ github.event.inputs.local_artifact_dir }}
+      BUILD: ${{ github.event.inputs.build }}
+      DRY_RUN: ${{ github.event.inputs.dry_run }}
+    steps:
+      - name: Check out repository
+        uses: https://gitea.com/actions/checkout@v4
+
+      - name: Validate required inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$JSONL" ]; then
+            echo "Input 'jsonl' is required."
+            exit 1
+          fi
+
+      - name: Show resolved inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "jsonl=$JSONL"
+          echo "output_dir=$OUTPUT_DIR"
+          echo "template=$TEMPLATE"
+          echo "workers=$WORKERS"
+          echo "base_image_registry=$BASE_IMAGE_REGISTRY"
+          echo "base_image_tag_suffix=$BASE_IMAGE_TAG_SUFFIX"
+          echo "image_registry=$IMAGE_REGISTRY"
+          echo "tag_prefix=$TAG_PREFIX"
+          echo "summary=$SUMMARY"
+          echo "local_artifact_dir=$LOCAL_ARTIFACT_DIR"
+          echo "build=$BUILD"
+          echo "dry_run=$DRY_RUN"
+
+      - name: Prepare batch command
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .gitea/tmp
+          cat > .gitea/tmp/run-batch-generate.sh <<'EOF'
+          #!/bin/sh
+          set -eu
+
+          set -- scripts/batch_generate_dockerfiles.py \
+            --jsonl "$JSONL" \
+            --output-dir "$OUTPUT_DIR" \
+            --template "$TEMPLATE" \
+            --workers "$WORKERS" \
+            --base-image-tag-suffix "$BASE_IMAGE_TAG_SUFFIX"
+
+          if [ -n "$BASE_IMAGE_REGISTRY" ]; then
+            set -- "$@" --base-image-registry "$BASE_IMAGE_REGISTRY"
+          fi
+
+          if [ -n "$IMAGE_REGISTRY" ]; then
+            set -- "$@" --image-registry "$IMAGE_REGISTRY"
+          fi
+
+          if [ -n "$TAG_PREFIX" ]; then
+            set -- "$@" --tag-prefix "$TAG_PREFIX"
+          fi
+
+          if [ -n "$SUMMARY" ]; then
+            set -- "$@" --summary "$SUMMARY"
+          fi
+
+          if [ "$BUILD" = "true" ]; then
+            set -- "$@" --build
+          fi
+
+          if [ "$DRY_RUN" = "true" ]; then
+            set -- "$@" --dry-run
+          fi
+
+          echo "Running command: ${PYTHON_BIN:-python3} $*"
+          exec "${PYTHON_BIN:-python3}" "$@"
+          EOF
+          chmod +x .gitea/tmp/run-batch-generate.sh
+
+      - name: Run batch generation in Python container
+        if: ${{ github.event.inputs.build != 'true' }}
+        uses: docker://python:3.11-slim
+        with:
+          entrypoint: sh
+          args: -lc "pip install -r requirements.txt && PYTHON_BIN=python sh .gitea/tmp/run-batch-generate.sh"
+
+      - name: Run batch generation on runner
+        if: ${{ github.event.inputs.build == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v python3 >/dev/null 2>&1
+          command -v pip3 >/dev/null 2>&1
+          command -v docker >/dev/null 2>&1
+          python3 --version
+          pip3 install -r requirements.txt
+          docker --version
+          PYTHON_BIN=python3 sh .gitea/tmp/run-batch-generate.sh
+
+      - name: Show summary file
+        if: ${{ github.event.inputs.summary != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "$SUMMARY" ]; then
+            cat "$SUMMARY"
+          else
+            echo "Summary file not found: $SUMMARY"
+          fi
+
+      - name: Collect workflow artifacts
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .gitea/artifacts
+
+          cat > .gitea/artifacts/run-info.txt <<EOF
+          jsonl=$JSONL
+          output_dir=$OUTPUT_DIR
+          template=$TEMPLATE
+          workers=$WORKERS
+          base_image_registry=$BASE_IMAGE_REGISTRY
+          base_image_tag_suffix=$BASE_IMAGE_TAG_SUFFIX
+          image_registry=$IMAGE_REGISTRY
+          tag_prefix=$TAG_PREFIX
+          summary=$SUMMARY
+          local_artifact_dir=$LOCAL_ARTIFACT_DIR
+          build=$BUILD
+          dry_run=$DRY_RUN
+          EOF
+
+          if [ -n "$SUMMARY" ] && [ -f "$SUMMARY" ]; then
+            cp "$SUMMARY" .gitea/artifacts/
+          fi
+
+          if [ -d "$OUTPUT_DIR" ]; then
+            tar -czf .gitea/artifacts/dockerfiles.tar.gz "$OUTPUT_DIR"
+          else
+            echo "Output directory not found: $OUTPUT_DIR" > .gitea/artifacts/output-dir-status.txt
+          fi
+
+          if [ -n "$LOCAL_ARTIFACT_DIR" ]; then
+            target_dir="$LOCAL_ARTIFACT_DIR/batch-generate-${{ github.run_id }}"
+            mkdir -p "$target_dir"
+            cp -R .gitea/artifacts/. "$target_dir/"
+            echo "Local artifacts copied to: $target_dir"
+          fi

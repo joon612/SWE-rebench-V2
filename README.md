@@ -76,6 +76,7 @@ python3 scripts/annotation_script.py \
 ```
 
 The output keeps original fields and adds:
+
 - `prompt` — rendered PR description prompt
 - `meta_prompt` — rendered meta info prompt
 
@@ -95,6 +96,7 @@ python3 scripts/annotation_script.py \
 ```
 
 Additional output fields when `--send` is used:
+
 - `prompt_response` — OpenAI response (includes `raw`, `error`, and full response payload)
 - `meta_prompt_response` — same for `meta_prompt` when `--field meta_prompt` or `--field both`
 
@@ -118,8 +120,79 @@ python3 scripts/build_instance_images.py \
 ```
 
 Optional flags:
+
 - `--base-image-registry` for base image registry prefix
 - `--image-registry` and `--tag-prefix` for instance image tags
+
+## Run batch Dockerfile generation in Gitea Actions
+
+This repo now includes a manually triggered Gitea Actions workflow at `.gitea/workflows/batch-generate-dockerfiles.yml`.
+
+The workflow is intended for `scripts/batch_generate_dockerfiles.py` and exposes the main CLI arguments as dispatch inputs:
+
+- `jsonl`
+- `output_dir`
+- `template`
+- `workers`
+- `base_image_registry`
+- `base_image_tag_suffix`
+- `image_registry`
+- `tag_prefix`
+- `summary`
+- `local_artifact_dir`
+- `build`
+- `dry_run`
+
+Typical usage from the Gitea UI:
+
+1. Open `Actions`.
+2. Select `Batch Generate Dockerfiles`.
+3. Click `Run workflow`.
+4. Fill in the input JSONL path and any optional overrides.
+
+Example values matching a local run:
+
+```text
+jsonl=C:/data/319_commands.jsonl
+output_dir=generated_dockerfiles
+workers=4
+build=false
+dry_run=false
+summary=batch-generate-summary.json
+local_artifact_dir=/data/gitea-actions-output
+```
+
+Notes:
+
+- The runner must have Python 3.11+ available.
+- For `build=false`, the workflow runs inside a fixed `python:3.11-slim` container to reduce runner-environment differences.
+- For `build=true`, the workflow runs on the runner itself so it can call `docker build`.
+- The workflow installs dependencies from `requirements.txt` in whichever execution environment is used.
+- If `build=true`, the runner must also have Docker available and permission to run `docker build`.
+- Paths are resolved on the runner machine, not your local workstation unless the runner is local to that machine.
+- The workflow does not commit generated Dockerfiles or summaries back into the repository, so they are not mirrored upstream unless you explicitly add and push them yourself.
+- Workflow artifacts are collected under `.gitea/artifacts` inside the job workspace, and if `local_artifact_dir` is set they are copied to a local runner path like `batch-generate-<run_id>`.
+- If you bind-mount a host directory into your runner container, `local_artifact_dir` is the safest way to keep all generated input/output strictly local to your self-hosted Gitea environment.
+- Each run uploads an artifact bundle containing `run-info.txt`, the summary file when present, and `dockerfiles.tar.gz` when the output directory exists.
+- The artifact upload step now assumes you have mirrored `actions/upload-artifact` into your own Gitea as `admin/upload-artifact@v4`.
+
+To mirror `upload-artifact` into a local Gitea instance, run:
+
+```bash
+python3 scripts/mirror_gitea_action.py \
+  --source https://github.com/actions/upload-artifact.git \
+  --gitea-base-url http://localhost:3000 \
+  --owner admin \
+  --repo upload-artifact \
+  --create-repo \
+  --token <GITEA_PAT>
+```
+
+Notes for the mirror step:
+
+- The token needs permission to create repositories and push code.
+- If your Gitea Actions instance uses `DEFAULT_ACTIONS_URL=self`, `admin/upload-artifact@v4` will resolve to your local Gitea automatically.
+- If your owner is not `admin`, update both the mirror command and the workflow `uses:` line accordingly.
 
 ## Run evaluation on all tasks (sample.json)
 
@@ -130,6 +203,7 @@ python3 scripts/eval.py --json sample.json --patches patches.json
 ```
 
 Notes:
+
 - Instance image tag is derived from each `instance_id`.
 - Ensure you built the instance images first (see above).
 - Logs are saved as `<instance_id>_log.txt` in the repo root.
@@ -137,27 +211,31 @@ Notes:
 ## Prompts used for labeling
 
 Primary prompts live in `prompts/annotations/`:
+
 - `pr_description.j2` — PR description generation
 - `meta_info.j2` — meta classification (A/B codes + difficulty)
 - `interfaces.j2` — interface extraction tied to tests
 
 Installer/build prompts live in `prompts/installer/`:
+
 - `log_parser.j2` — log parser synthesis
 - `base_dockerfile.j2` — base image generation
 - `agent.j2` — installer agent prompt
 
 Issue clarity ablations are under `prompts/issue_clarity_ablation/`:
+
 - `verified.j2`, `verified_plus.j2`, `verified_extra.j2`, `spice.j2`, `rebench_v1.j2`
 
 # Citation
 
 ```bibtex
 @misc{badertdinov2026swerebenchv2languageagnosticswe,
-      title={SWE-rebench V2: Language-Agnostic SWE Task Collection at Scale}, 
+      title={SWE-rebench V2: Language-Agnostic SWE Task Collection at Scale},
       author={Ibragim Badertdinov and Maksim Nekrashevich and Anton Shevtsov and Alexander Golubev},
       year={2026},
       eprint={2602.23866},
       archivePrefix={arXiv},
       primaryClass={cs.SE},
-      url={https://arxiv.org/abs/2602.23866}, 
+      url={https://arxiv.org/abs/2602.23866},
 }
+```
