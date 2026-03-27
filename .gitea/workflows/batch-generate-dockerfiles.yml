@@ -158,12 +158,16 @@ jobs:
         run: |
           set -euo pipefail
           command -v python3 >/dev/null 2>&1
-          command -v pip3 >/dev/null 2>&1
           command -v docker >/dev/null 2>&1
           python3 --version
-          pip3 install -r requirements.txt
+
+          # Create and activate a virtual environment to avoid PEP 668 'externally-managed-environment' errors
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt
+
           docker --version
-          PYTHON_BIN=python3 sh .gitea/tmp/run-batch-generate.sh
+          PYTHON_BIN=python sh .gitea/tmp/run-batch-generate.sh
 
       - name: Show summary file
         if: ${{ github.event.inputs.summary != '' }}
