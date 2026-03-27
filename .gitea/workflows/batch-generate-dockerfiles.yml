@@ -100,6 +100,21 @@ jobs:
           echo "build=$BUILD"
           echo "dry_run=$DRY_RUN"
 
+      - name: Validate runner-visible paths
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$JSONL" ]; then
+            echo "JSONL file not found on runner: $JSONL"
+            exit 1
+          fi
+
+          if [ ! -f "$TEMPLATE" ]; then
+            echo "Template not found on runner: $TEMPLATE"
+            exit 1
+          fi
+
       - name: Prepare batch command
         shell: bash
         run: |
@@ -145,20 +160,11 @@ jobs:
           EOF
           chmod +x .gitea/tmp/run-batch-generate.sh
 
-      - name: Run batch generation in Python container
-        if: ${{ github.event.inputs.build != 'true' }}
-        uses: docker://python:3.11-slim
-        with:
-          entrypoint: sh
-          args: -lc "pip install -r requirements.txt && PYTHON_BIN=python sh .gitea/tmp/run-batch-generate.sh"
-
       - name: Run batch generation on runner
-        if: ${{ github.event.inputs.build == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           command -v python3 >/dev/null 2>&1
-          command -v docker >/dev/null 2>&1
           python3 --version
 
           # Create and activate a virtual environment to avoid PEP 668 'externally-managed-environment' errors
@@ -166,7 +172,11 @@ jobs:
           source .venv/bin/activate
           pip install -r requirements.txt
 
-          docker --version
+          if [ "$BUILD" = "true" ]; then
+            command -v docker >/dev/null 2>&1
+            docker --version
+          fi
+
           PYTHON_BIN=python sh .gitea/tmp/run-batch-generate.sh
 
       - name: Show summary file

@@ -153,7 +153,7 @@ Typical usage from the Gitea UI:
 Example values matching a local run:
 
 ```text
-jsonl=C:/data/319_commands.jsonl
+jsonl=/data/inputs/319_commands.jsonl
 output_dir=generated_dockerfiles
 workers=4
 build=false
@@ -165,11 +165,11 @@ local_artifact_dir=/data/gitea-actions-output
 Notes:
 
 - The runner must have Python 3.11+ available.
-- For `build=false`, the workflow runs inside a fixed `python:3.11-slim` container to reduce runner-environment differences.
-- For `build=true`, the workflow runs on the runner itself so it can call `docker build`.
+- The workflow always runs the Python script on the runner inside a temporary virtual environment.
+- For `build=true`, the runner must also have Docker available because the script will call `docker build`.
 - The workflow installs dependencies from `requirements.txt` in whichever execution environment is used.
-- If `build=true`, the runner must also have Docker available and permission to run `docker build`.
 - Paths are resolved on the runner machine, not your local workstation unless the runner is local to that machine.
+- If your Gitea runner itself is containerized, any path such as `/data/inputs/...` must be bind-mounted into the runner container before the workflow can read or write it.
 - The workflow does not commit generated Dockerfiles or summaries back into the repository, so they are not mirrored upstream unless you explicitly add and push them yourself.
 - Workflow artifacts are collected under `.gitea/artifacts` inside the job workspace, and if `local_artifact_dir` is set they are copied to a local runner path like `batch-generate-<run_id>`.
 - If you bind-mount a host directory into your runner container, `local_artifact_dir` is the safest way to keep all generated input/output strictly local to your self-hosted Gitea environment.
