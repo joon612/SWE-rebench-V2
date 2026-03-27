@@ -20,7 +20,7 @@ on:
         required: true
         default: combine.Dockerfile.j2
       shards:
-        description: Number of parallel test shards
+        description: Number of JSONL shards (for future multi-node, currently sequential)
         required: true
         default: "4"
       workers_per_shard:
@@ -49,22 +49,20 @@ on:
         type: boolean
         default: false
 
-# ---------------------------------------------------------------
-#  Stage 1: generate Dockerfiles + split JSONL into shards
-# ---------------------------------------------------------------
 jobs:
-  generate:
+  pipeline:
     runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.split.outputs.matrix }}
     env:
       JSONL: ${{ github.event.inputs.jsonl }}
       OUTPUT_DIR: ${{ github.event.inputs.output_dir }}
       RESULTS_DIR: ${{ github.event.inputs.results_dir }}
       TEMPLATE: ${{ github.event.inputs.template }}
       SHARDS: ${{ github.event.inputs.shards }}
+      WORKERS: ${{ github.event.inputs.workers_per_shard }}
       BASE_IMAGE_REGISTRY: ${{ github.event.inputs.base_image_registry }}
       BASE_IMAGE_TAG_SUFFIX: ${{ github.event.inputs.base_image_tag_suffix }}
+      TIMEOUT_BUILD: ${{ github.event.inputs.timeout_build }}
+      TIMEOUT_TEST: ${{ github.event.inputs.timeout_test }}
       DRY_RUN: ${{ github.event.inputs.dry_run }}
     steps:
       - name: Check out repository
@@ -87,6 +85,7 @@ jobs:
           source .venv/bin/activate
           pip install -r requirements.txt
 
+      # --- Stage 1: Generate Dockerfiles ---
       - name: Generate Dockerfiles
         shell: bash
         run: |
@@ -113,82 +112,68 @@ jobs:
 
           python "${ARGS[@]}"
 
+      # --- Stage 2: Split JSONL into shards ---
       - name: Split JSONL into shards
-        id: split
+        if: ${{ github.event.inputs.dry_run != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           source .venv/bin/activate
           mkdir -p "$RESULTS_DIR/shards"
-          MATRIX=$(python scripts/split_jsonl.py \
+          python scripts/split_jsonl.py \
             --jsonl "$JSONL" \
             --shards "$SHARDS" \
-            --output-dir "$RESULTS_DIR/shards")
-          echo "matrix={\"shard\":$MATRIX}" >> "$GITHUB_OUTPUT"
-          echo "Shard matrix: $MATRIX"
+            --output-dir "$RESULTS_DIR/shards"
+          echo "Shards created:"
+          ls -la "$RESULTS_DIR/shards/"
 
-  # ---------------------------------------------------------------
-  #  Stage 2: build + test each shard in parallel
-  # ---------------------------------------------------------------
-  test:
-    runs-on: ubuntu-latest
-    needs: generate
-    if: ${{ github.event.inputs.dry_run != 'true' }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.generate.outputs.matrix) }}
-    env:
-      OUTPUT_DIR: ${{ github.event.inputs.output_dir }}
-      RESULTS_DIR: ${{ github.event.inputs.results_dir }}
-      WORKERS: ${{ github.event.inputs.workers_per_shard }}
-      TIMEOUT_BUILD: ${{ github.event.inputs.timeout_build }}
-      TIMEOUT_TEST: ${{ github.event.inputs.timeout_test }}
-    steps:
-      - name: Check out repository
-        uses: https://gitea.com/actions/checkout@v4
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m venv .venv
-          source .venv/bin/activate
-          pip install -r requirements.txt
-
-      - name: Run shard ${{ matrix.shard }}
+      # --- Stage 3: Build + Test each shard ---
+      - name: Build and test all shards
+        if: ${{ github.event.inputs.dry_run != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           source .venv/bin/activate
 
-          SHARD_JSONL="$RESULTS_DIR/shards/shard_${{ matrix.shard }}.jsonl"
-          SHARD_RESULT="$RESULTS_DIR/shard_${{ matrix.shard }}.results.jsonl"
+          shard_count=$SHARDS
+          # Clamp to actual shard files present
+          actual=$(ls "$RESULTS_DIR/shards"/shard_*.jsonl 2>/dev/null | wc -l)
+          if [ "$actual" -lt "$shard_count" ]; then
+            shard_count=$actual
+          fi
 
-          echo "Processing shard ${{ matrix.shard }}"
-          echo "Input: $SHARD_JSONL"
-          echo "Dockerfiles: $OUTPUT_DIR"
-          echo "Output: $SHARD_RESULT"
+          echo "Running $shard_count shard(s) sequentially ..."
+          echo ""
 
-          python scripts/run_shard_tests.py \
-            --jsonl "$SHARD_JSONL" \
-            --dockerfile-dir "$OUTPUT_DIR" \
-            --output "$SHARD_RESULT" \
-            --timeout-build "$TIMEOUT_BUILD" \
-            --timeout-test "$TIMEOUT_TEST" \
-            --workers "$WORKERS"
+          overall_exit=0
 
-  # ---------------------------------------------------------------
-  #  Stage 3: collect and merge all shard results
-  # ---------------------------------------------------------------
-  collect:
-    runs-on: ubuntu-latest
-    needs: test
-    if: ${{ always() && github.event.inputs.dry_run != 'true' }}
-    env:
-      RESULTS_DIR: ${{ github.event.inputs.results_dir }}
-      SHARDS: ${{ github.event.inputs.shards }}
-    steps:
-      - name: Merge shard results
+          for i in $(seq 0 $(( shard_count - 1 ))); do
+            SHARD_JSONL="$RESULTS_DIR/shards/shard_${i}.jsonl"
+            SHARD_RESULT="$RESULTS_DIR/shard_${i}.results.jsonl"
+
+            echo "==============================="
+            echo "Shard $i / $(( shard_count - 1 ))"
+            echo "  Input:       $SHARD_JSONL"
+            echo "  Dockerfiles: $OUTPUT_DIR"
+            echo "  Output:      $SHARD_RESULT"
+            echo "==============================="
+
+            python scripts/run_shard_tests.py \
+              --jsonl "$SHARD_JSONL" \
+              --dockerfile-dir "$OUTPUT_DIR" \
+              --output "$SHARD_RESULT" \
+              --timeout-build "$TIMEOUT_BUILD" \
+              --timeout-test "$TIMEOUT_TEST" \
+              --workers "$WORKERS" || overall_exit=1
+
+            echo ""
+          done
+
+          exit $overall_exit
+
+      # --- Stage 4: Merge results ---
+      - name: Merge results
+        if: ${{ always() && github.event.inputs.dry_run != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -200,19 +185,16 @@ jobs:
           passed=0
           failed=0
 
-          for i in $(seq 0 $(( SHARDS - 1 ))); do
-            SHARD_FILE="$RESULTS_DIR/shard_${i}.results.jsonl"
-            if [ -f "$SHARD_FILE" ]; then
-              cat "$SHARD_FILE" >> "$MERGED"
-              shard_total=$(wc -l < "$SHARD_FILE")
-              shard_passed=$(grep -c '"status": "passed"' "$SHARD_FILE" || true)
+          for f in "$RESULTS_DIR"/shard_*.results.jsonl; do
+            if [ -f "$f" ]; then
+              cat "$f" >> "$MERGED"
+              shard_total=$(wc -l < "$f")
+              shard_passed=$(grep -c '"status": "passed"' "$f" || true)
               shard_failed=$(( shard_total - shard_passed ))
-              echo "Shard $i: $shard_passed passed, $shard_failed failed (total $shard_total)"
+              echo "$(basename "$f"): $shard_passed passed, $shard_failed failed (total $shard_total)"
               total=$(( total + shard_total ))
               passed=$(( passed + shard_passed ))
               failed=$(( failed + shard_failed ))
-            else
-              echo "Shard $i: result file missing ($SHARD_FILE)"
             fi
           done
 
@@ -223,16 +205,14 @@ jobs:
           echo "Failed: $failed"
           echo "==============================="
 
-          # Write summary JSON
-          cat > "$RESULTS_DIR/test-summary.json" <<EOF
+          cat > "$RESULTS_DIR/test-summary.json" <<SUMMARY_EOF
           {
             "total": $total,
             "passed": $passed,
             "failed": $failed,
-            "shards": $SHARDS,
             "merged_results": "$MERGED"
           }
-          EOF
+          SUMMARY_EOF
 
-          echo "Results merged to: $MERGED"
-          echo "Summary written to: $RESULTS_DIR/test-summary.json"
+          echo "Results: $MERGED"
+          echo "Summary: $RESULTS_DIR/test-summary.json"
