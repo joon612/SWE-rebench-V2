@@ -136,14 +136,14 @@ def process_one(
         _log(f"[SKIP] {instance_id}: no test command")
         return result
 
-    # Strip comment/shebang lines to get actual test commands
+    # Pass the test script directly to bash, stripping only shebangs
     test_lines = []
     for line in test_script.splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        if stripped.startswith("#!"):
             continue
-        test_lines.append(stripped)
-    test_cmd = " && ".join(test_lines) if test_lines else test_script.strip()
+        test_lines.append(line)
+    test_cmd = "\n".join(test_lines).strip()
 
     t1 = time.monotonic()
     _log(f"[TEST] {instance_id} ...")

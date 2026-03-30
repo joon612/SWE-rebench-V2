@@ -22,15 +22,6 @@ RUN node -v && npm -v
 RUN npm install --global corepack@latest
 RUN corepack enable pnpm
 
-# Install Chrome for browser testing
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set up Chrome environment variables
-ENV CHROME_BIN /usr/bin/google-chrome
-ENV CHROME_PATH /usr/bin/google-chrome
+# Chrome installation removed (unreliable CDN; install manually if needed)
 
 RUN adduser --disabled-password --gecos 'dog' nonroot

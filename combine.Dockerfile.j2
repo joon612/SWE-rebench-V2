@@ -6,16 +6,18 @@
 FROM --platform=linux/amd64 {{ base_image }} AS base
 FROM --platform=linux/amd64 base AS {{ spec.instance_id }}
 
-RUN <<-DOCKER_RUN_EOF
-    set -eux;
-    git clone -o origin https://github.com/{{ spec.repo }} {{ project_dir }};
-    chmod -R 777 {{ project_dir }};
-    cd {{ project_dir }};
-    git reset --hard {{ spec.base_commit }};
-    git remote remove origin;
+RUN bash <<-DOCKER_RUN_EOF
+    set -eux
+    git clone -o origin https://github.com/{{ spec.repo }} {{ project_dir }}
+    chmod -R 777 {{ project_dir }}
+    cd {{ project_dir }}
+    git reset --hard {{ spec.base_commit }}
+    git remote remove origin
+    set +e
     {%- for cmd in spec.install_config.install %}
-    ( {{ cmd }} ) || true;
+    {{ cmd }}
     {%- endfor %}
+    exit 0
 DOCKER_RUN_EOF
 
 WORKDIR {{ project_dir }}
